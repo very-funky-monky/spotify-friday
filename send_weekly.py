@@ -61,6 +61,7 @@ def get(url, headers=None, **kw):
     global RATE_LIMITED
     r = None
     for attempt in range(5):
+        time.sleep(0.5)   # kb. max. 2 kérés/mp, hogy ne érjük el a Spotify korlátját
         try:
             r = requests.get(url, headers=headers, timeout=30, **kw)
         except requests.RequestException:
@@ -150,6 +151,9 @@ def main():
     for name in sorted(allow):
         collect(f'artist:"{name}" tag:new', 1)
 
+    if RATE_LIMITED and not albums:
+        sys.exit("A Spotify korlátozza az appot, nincs adat. Levelet nem küldök, próbáld később.")
+
     # 2) Magyar felismerés
     def names_of(al):
         return [x["name"] for x in al["artists"]]
@@ -226,6 +230,8 @@ def main():
             parts.append("</ul>")
     if not entries:
         parts.append("<p>Ezen a héten nem találtam új magyar megjelenést.</p>")
+    if RATE_LIMITED:
+        parts.append("<p><i>Figyelem: a Spotify sebességkorlátja miatt a lista hiányos lehet.</i></p>")
 
     # 5) Küldés Brevóval
     r = requests.post(
