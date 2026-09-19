@@ -11,17 +11,31 @@ if os.getenv("GITHUB_EVENT_NAME") == "schedule" and now.hour != 6:
 
 MARKET = "HU"
 DAYS_BACK = 7
-since = (now - dt.timedelta(days=DAYS_BACK)).date()
+since = str((now - dt.timedelta(days=DAYS_BACK)).date())
+SP = "https://api.spotify.com/v1"
+MB = "https://musicbrainz.org/ws/2"
+MB_HEADERS = {"User-Agent": f"hu-friday-releases/1.0 ({os.getenv('MAIL_TO', 'unknown')})"}
 
 # Sorrend számít: az első találó kategória nyer
 CATEGORIES = [
-    ("Rap / Hip-hop", ["rap", "hip hop", "trap"]),
+    ("Rap / Hip-hop", ["rap", "hip hop", "hip-hop", "trap"]),
     ("Elektronikus", ["electro", "house", "techno", "edm", "dance", "trance", "drum and bass"]),
     ("Rock / Alternatív", ["rock", "metal", "punk", "indie", "alternative"]),
-    ("Népzene / World", ["folk", "nepzene", "népzene", "world", "tanchaz"]),
+    ("Népzene / World", ["folk", "world", "népzene", "nepzene"]),
     ("Pop", ["pop"]),
 ]
-HU_MARKERS = ["hungarian", "magyar"]
+CAT_NAMES = [n for n, _ in CATEGORIES] + ["Egyéb"]
+
+
+def get(url, headers=None, **kw):
+    r = None
+    for _ in range(5):
+        r = requests.get(url, headers=headers, timeout=30, **kw)
+        if r.status_code in (429, 503):
+            time.sleep(int(r.headers.get("Retry-After", "2")) + 1)
+            continue
+        return r
+    return r
 
 
 def spotify_token():
@@ -35,76 +49,109 @@ def spotify_token():
     return r.json()["access_token"]
 
 
-def get(url, headers, **kw):
-    for _ in range(5):
-        r = requests.get(url, headers=headers, timeout=30, **kw)
-        if r.status_code == 429:
-            time.sleep(int(r.headers.get("Retry-After", "2")) + 1)
-            continue
-        return r
-    return r
+def load_allowlist():
+    """artists.txt: soronként 'Név' vagy 'Név | Kategória'."""
+    out = {}
+    if os.path.exists("artists.txt"):
+        for line in open("artists.txt", encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, _, cat = line.partition("|")
+            out[name.strip().lower()] = cat.strip() or None
+    return out
+
+
+def category_from(tags):
+    text = " ".join(tags).lower()
+    return next((n for n, keys in CATEGORIES if any(k in text for k in keys)), "Egyéb")
+
+
+_mb_cache = {}
+
+
+def musicbrainz(name):
+    """(magyar-e, kategória) a MusicBrainz alapján; csak pontos névegyezés számít."""
+    key = name.lower()
+    if key in _mb_cache:
+        return _mb_cache[key]
+    time.sleep(1.1)  # MusicBrainz: max ~1 kérés/mp
+    result = (False, None)
+    try:
+        r = get(f"{MB}/artist", MB_HEADERS, params={
+            "query": f'artist:"{name}"', "fmt": "json", "limit": 5})
+        if r.status_code == 200:
+            for a in r.json().get("artists", []):
+                if a.get("name", "").lower() == key and a.get("country") == "HU":
+                    tags = [t["name"] for t in sorted(
+                        a.get("tags", []), key=lambda t: -t.get("count", 0))]
+                    result = (True, category_from(tags))
+                    break
+        else:
+            print(f"MusicBrainz hiba {r.status_code}: {name}")
+    except requests.RequestException as e:
+        print(f"MusicBrainz hálózati hiba: {name}: {e}")
+    _mb_cache[key] = result
+    return result
 
 
 def main():
     h = {"Authorization": f"Bearer {spotify_token()}"}
-    api = "https://api.spotify.com/v1"
+    allow = load_allowlist()
 
-    # 1) Friss albumok/kislemezek keresése
+    # 1) Friss kiadások keresése
     albums = {}
-    for offset in range(0, 200, 10):
-        r = requests.get(f"{api}/search", headers=h, timeout=30, params={
-            "q": "tag:new", "type": "album", "market": MARKET, "limit": 10, "offset": offset})
-        r.raise_for_status()
-        items = r.json()["albums"]["items"]
-        if not items:
-            break
-        for a in items:
-            if a["release_date"] >= str(since):
-                albums[a["id"]] = a
 
-    # 2) Előadók műfajai (egyesével, mert a többes végpont 403-at adott)
-    artist_ids = sorted({ar["id"] for a in albums.values() for ar in a["artists"]})
-    genres, no_genre_field, failed = {}, 0, 0
-    for aid in artist_ids:
-        r = get(f"{api}/artists/{aid}", h)
-        if r.status_code != 200:
-            failed += 1
-            if failed <= 3:
-                print(f"Előadó lekérés hiba: {r.status_code} {r.text[:200]}")
-            continue
-        data = r.json()
-        if "genres" not in data:
-            no_genre_field += 1
-        genres[aid] = data.get("genres", [])
-    print(f"{len(albums)} friss album, {len(artist_ids)} előadó, "
-          f"{failed} sikertelen lekérés, {no_genre_field} előadónál nincs 'genres' mező.")
-    if artist_ids and (failed == len(artist_ids) or no_genre_field == len(artist_ids)):
-        sys.exit("A Spotify nem ad műfajadatot ehhez az apphoz, másik szűrési megoldás kell.")
+    def collect(q, pages):
+        for offset in range(0, pages * 10, 10):
+            r = get(f"{SP}/search", h, params={
+                "q": q, "type": "album", "market": MARKET, "limit": 10, "offset": offset})
+            if r.status_code != 200:
+                print(f"Keresés hiba {r.status_code}: {q}")
+                return
+            items = r.json()["albums"]["items"]
+            if not items:
+                return
+            for a in items:
+                if a["release_date"] >= since and a.get("album_type") != "compilation":
+                    albums[a["id"]] = a
 
-    # 3) Csak magyar előadók, majd számok lekérése
-    hu_albums = []
-    for a in albums.values():
-        g = [x for ar in a["artists"] for x in genres.get(ar["id"], [])]
-        if any(m in x for x in g for m in HU_MARKERS):
-            hu_albums.append((a, g))
+    collect("tag:new", 20)
+    for name in allow:
+        collect(f'artist:"{name}" tag:new', 1)
 
+    # 2) Magyar előadók azonosítása
+    names = {ar["name"] for a in albums.values() for ar in a["artists"]}
+    info, lookups = {}, 0
+    for n in sorted(names):
+        if n.lower() in allow:
+            info[n] = (True, allow[n.lower()] or musicbrainz(n)[1] or "Egyéb")
+        else:
+            lookups += 1
+            info[n] = musicbrainz(n)
+    hu_count = sum(1 for v in info.values() if v[0])
+    print(f"{len(albums)} friss kiadás, {len(names)} előadó, "
+          f"{lookups} MusicBrainz keresés, {hu_count} magyar előadó.")
+
+    # 3) Számok lekérése a magyar kiadásokhoz
     by_cat = defaultdict(list)
-    for a, g in hu_albums:
-        r = get(f"{api}/albums/{a['id']}/tracks", h, params={"market": MARKET, "limit": 50})
-        if r.status_code != 200:
-            print(f"Album számlista hiba: {r.status_code} {a['name']}")
+    for a in albums.values():
+        hu = [info[ar["name"]] for ar in a["artists"] if info[ar["name"]][0]]
+        if not hu:
             continue
-        gl = " ".join(g).lower()
-        cat = next((n for n, keys in CATEGORIES if any(k in gl for k in keys)), "Egyéb")
+        cat = hu[0][1] or "Egyéb"
+        r = get(f"{SP}/albums/{a['id']}/tracks", h, params={"market": MARKET, "limit": 50})
+        if r.status_code != 200:
+            print(f"Számlista hiba {r.status_code}: {a['name']}")
+            continue
         artists = ", ".join(x["name"] for x in a["artists"])
         for t in r.json()["items"]:
             by_cat[cat].append((artists, t["name"], t["external_urls"]["spotify"]))
 
     # 4) HTML e-mail
-    order = [n for n, _ in CATEGORIES] + ["Egyéb"]
     parts = [f"<h2>Magyar megjelenések – {now:%Y. %m. %d.}</h2>"]
     total = 0
-    for cat in order:
+    for cat in CAT_NAMES:
         tracks = sorted(by_cat.get(cat, []))
         if not tracks:
             continue
