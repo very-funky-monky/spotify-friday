@@ -29,10 +29,15 @@ CAT_NAMES = [n for n, _ in CATEGORIES] + ["Egyéb"]
 
 def get(url, headers=None, **kw):
     r = None
-    for _ in range(5):
-        r = requests.get(url, headers=headers, timeout=30, **kw)
-        if r.status_code in (429, 503):
-            time.sleep(int(r.headers.get("Retry-After", "2")) + 1)
+    for attempt in range(5):
+        try:
+            r = requests.get(url, headers=headers, timeout=30, **kw)
+        except requests.RequestException:
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            wait = int(r.headers.get("Retry-After", 0)) if r.status_code == 429 else 0
+            time.sleep(max(wait, 2 * (attempt + 1)))
             continue
         return r
     return r
@@ -106,9 +111,9 @@ def main():
         for offset in range(0, pages * 10, 10):
             r = get(f"{SP}/search", h, params={
                 "q": q, "type": "album", "market": MARKET, "limit": 10, "offset": offset})
-            if r.status_code != 200:
-                print(f"Keresés hiba {r.status_code}: {q}")
-                return
+            if r is None or r.status_code != 200:
+                print(f"Keresés hiba {getattr(r, 'status_code', 'nincs válasz')}: {q} (offset {offset})")
+                continue
             items = r.json()["albums"]["items"]
             if not items:
                 return
