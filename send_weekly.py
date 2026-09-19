@@ -215,6 +215,9 @@ def main():
         tracks = [(t["name"], t["external_urls"]["spotify"]) for t in r.json()["items"]]
         entries.append((artists, a, tracks))
 
+    if RATE_LIMITED and not entries:
+        sys.exit("A Spotify korlátozza az appot, és nincs találat. Levelet nem küldök, próbáld később.")
+
     # 4) HTML e-mail
     parts = [f"<h2>Magyar megjelenések – {now:%Y. %m. %d.}</h2>"]
     total = sum(len(t) for _, _, t in entries)
