@@ -26,6 +26,21 @@ HU_WORDS = {
     "tél", "eső", "hazug", "igaz", "csak", "kell", "akarom", "tudom", "vagyok", "nincs",
     "minden", "semmi", "valaki", "senki", "újra", "végre", "miért", "hogyan", "mikor",
 }
+HU_WORDS |= {
+    "szeretet", "szeretni", "csók", "csókolj", "ölelés", "ölelj", "kedves", "kedvesem", "drágám",
+    "édes", "édesem", "gyönyörű", "szép", "szépség", "fáj", "fájdalom", "remény", "bűn", "bűnös",
+    "büszke", "emlék", "emlékszem", "emlékek", "múlt", "jövő", "pillanat", "tenger", "folyó",
+    "hegy", "erdő", "kert", "virág", "virágok", "rózsa", "madár", "farkas", "kutya", "ház",
+    "otthon", "szoba", "ablak", "ajtó", "híd", "vonat", "utca", "buli", "bulizni", "tánc",
+    "táncolj", "dalok", "énekelj", "csend", "csendes", "sír", "mosoly", "mosolyogj", "ébredj",
+    "aludj", "hazudsz", "kérlek", "engedj", "elengedlek", "bocsáss", "gyűlöllek", "hiányzol",
+    "várlak", "várj", "kezdet", "vége", "szabadság", "béke", "háború", "forradalom", "király",
+    "királynő", "hercegnő", "csoda", "varázs", "átok", "sors", "szerencse", "pénz", "arany",
+    "ezüst", "gyémánt", "karácsony", "húsvét", "kislányom", "kisfiam", "anyu", "apu", "nagyi",
+    "haver", "haverok", "csajok", "srácok", "bébi", "kicsim", "cica", "vágyom", "vágy",
+}
+# Ezeket a tömeggyártott/novelty címeket kiszűrjük (a cím része, kisbetűvel)
+EXCLUDE = ["szülinap", "születésnap", "szuletesnap"]
 STRONG_CHARS = "őűŐŰ"
 
 
@@ -102,17 +117,48 @@ def main():
     for name in sorted(allow):
         collect(f'artist:"{name}" tag:new', 1)
 
-    # 2) Magyar felismerés cím / előadónév / saját lista alapján
-    hu = []
-    for a in albums.values():
-        artists = ", ".join(x["name"] for x in a["artists"])
-        if (is_hungarian(a["name"]) or is_hungarian(artists)
-                or any(x["name"].lower() in allow for x in a["artists"])):
-            hu.append((artists, a))
-    print(f"{len(albums)} friss kiadás, ebből {len(hu)} magyarnak felismerve, "
-          f"{errors} sikertelen keresés.")
-    for artists, a in hu[:15]:
-        print(f"  {artists} – {a['name']}")
+    # 2) Magyar felismerés
+    def names_of(al):
+        return [x["name"] for x in al["artists"]]
+
+    def excluded(al):
+        n = al["name"].lower()
+        return any(e in n for e in EXCLUDE)
+
+    for k in [k for k, v in albums.items() if excluded(v)]:
+        del albums[k]
+
+    # Magyarnak tekintett előadók: saját lista + akiknek magyar című kiadása van
+    # + akiknek a nevében ő/ű betű szerepel
+    hu_artists = set(allow)
+    for al in albums.values():
+        if is_hungarian(al["name"]):
+            hu_artists.update(n.lower() for n in names_of(al))
+        for n in names_of(al):
+            if any(c in n for c in STRONG_CHARS):
+                hu_artists.add(n.lower())
+
+    # Gólyaeffektus: ezeknek az előadóknak a többi friss kiadását is megkeressük
+    # (így az angol című magyar kiadások is bekerülnek)
+    before = len(albums)
+    for name in sorted(hu_artists - allow):
+        collect(f'artist:"{name}" tag:new', 1)
+    for k in [k for k, v in albums.items() if excluded(v)]:
+        del albums[k]
+    print(f"Gólyaeffektus: {len(hu_artists)} magyarnak vélt előadó, +{len(albums) - before} új kiadás.")
+
+    hu, via_artist = [], []
+    for al in albums.values():
+        artists = ", ".join(names_of(al))
+        if is_hungarian(al["name"]):
+            hu.append((artists, al))
+        elif any(n.lower() in hu_artists for n in names_of(al)):
+            hu.append((artists, al))
+            via_artist.append((artists, al))
+    print(f"{len(albums)} friss kiadás, ebből {len(hu)} magyarnak felismerve "
+          f"({len(via_artist)} előadó alapján), {errors} sikertelen keresés.")
+    for artists, al in via_artist[:15]:
+        print(f"  [előadó alapján] {artists} – {al['name']}")
 
     # 3) Számok lekérése
     entries = []
