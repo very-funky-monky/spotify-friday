@@ -1,4 +1,4 @@
-import os, sys, html, datetime as dt
+import os, sys, time, html, datetime as dt
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 import requests
@@ -35,9 +35,14 @@ def spotify_token():
     return r.json()["access_token"]
 
 
-def chunks(seq, n):
-    for i in range(0, len(seq), n):
-        yield seq[i:i + n]
+def get(url, headers, **kw):
+    for _ in range(5):
+        r = requests.get(url, headers=headers, timeout=30, **kw)
+        if r.status_code == 429:
+            time.sleep(int(r.headers.get("Retry-After", "2")) + 1)
+            continue
+        return r
+    return r
 
 
 def main():
@@ -57,15 +62,24 @@ def main():
             if a["release_date"] >= str(since):
                 albums[a["id"]] = a
 
-    # 2) Előadók műfajai
+    # 2) Előadók műfajai (egyesével, mert a többes végpont 403-at adott)
     artist_ids = sorted({ar["id"] for a in albums.values() for ar in a["artists"]})
-    genres = {}
-    for c in chunks(artist_ids, 50):
-        r = requests.get(f"{api}/artists", headers=h, params={"ids": ",".join(c)}, timeout=30)
-        r.raise_for_status()
-        for ar in r.json()["artists"]:
-            if ar:
-                genres[ar["id"]] = ar.get("genres", [])
+    genres, no_genre_field, failed = {}, 0, 0
+    for aid in artist_ids:
+        r = get(f"{api}/artists/{aid}", h)
+        if r.status_code != 200:
+            failed += 1
+            if failed <= 3:
+                print(f"Előadó lekérés hiba: {r.status_code} {r.text[:200]}")
+            continue
+        data = r.json()
+        if "genres" not in data:
+            no_genre_field += 1
+        genres[aid] = data.get("genres", [])
+    print(f"{len(albums)} friss album, {len(artist_ids)} előadó, "
+          f"{failed} sikertelen lekérés, {no_genre_field} előadónál nincs 'genres' mező.")
+    if artist_ids and (failed == len(artist_ids) or no_genre_field == len(artist_ids)):
+        sys.exit("A Spotify nem ad műfajadatot ehhez az apphoz, másik szűrési megoldás kell.")
 
     # 3) Csak magyar előadók, majd számok lekérése
     hu_albums = []
@@ -75,18 +89,16 @@ def main():
             hu_albums.append((a, g))
 
     by_cat = defaultdict(list)
-    for c in chunks([a["id"] for a, _ in hu_albums], 20):
-        r = requests.get(f"{api}/albums", headers=h, params={"ids": ",".join(c), "market": MARKET}, timeout=30)
-        r.raise_for_status()
-        full = {a["id"]: a for a in r.json()["albums"] if a}
-        for a, g in hu_albums:
-            if a["id"] not in full:
-                continue
-            gl = " ".join(g).lower()
-            cat = next((n for n, keys in CATEGORIES if any(k in gl for k in keys)), "Egyéb")
-            artists = ", ".join(x["name"] for x in a["artists"])
-            for t in full[a["id"]]["tracks"]["items"]:
-                by_cat[cat].append((artists, t["name"], t["external_urls"]["spotify"]))
+    for a, g in hu_albums:
+        r = get(f"{api}/albums/{a['id']}/tracks", h, params={"market": MARKET, "limit": 50})
+        if r.status_code != 200:
+            print(f"Album számlista hiba: {r.status_code} {a['name']}")
+            continue
+        gl = " ".join(g).lower()
+        cat = next((n for n, keys in CATEGORIES if any(k in gl for k in keys)), "Egyéb")
+        artists = ", ".join(x["name"] for x in a["artists"])
+        for t in r.json()["items"]:
+            by_cat[cat].append((artists, t["name"], t["external_urls"]["spotify"]))
 
     # 4) HTML e-mail
     order = [n for n, _ in CATEGORIES] + ["Egyéb"]
