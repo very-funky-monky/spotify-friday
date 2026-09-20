@@ -2,8 +2,8 @@ name: Heti magyar megjelenések
 
 on:
   schedule:
-    - cron: "15 4 * * 5"   # 6:15 nyári időszámítás (CEST)
-    - cron: "15 5 * * 5"   # 6:15 téli időszámítás (CET)
+    - cron: "15 1 * * *"
+      timezone: "Europe/Budapest"
   workflow_dispatch:        # kézi teszteléshez
 
 jobs:
