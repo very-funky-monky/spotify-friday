@@ -4,7 +4,7 @@ import requests
 
 # --- Időzítés: a két cron közül csak az fusson, ami budapesti idő szerint 6 óra
 now = dt.datetime.now(ZoneInfo("Europe/Budapest"))
-if os.getenv("GITHUB_EVENT_NAME") == "schedule" and now.hour != 6:
+if os.getenv("GITHUB_EVENT_NAME") == "schedule" and now.hour != 1:
     print("Nem 6 óra van Budapesten, kihagyom.")
     sys.exit(0)
 
