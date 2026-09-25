@@ -2,8 +2,9 @@ name: Heti magyar megjelenések
 
 on:
   schedule:
-    - cron: "15 1 * * *"
-      timezone: "Europe/Budapest"
+    # 1:15 Budapest idő szerint, péntekre - a két időszámítás miatt eltérő UTC nap/óra kell:
+    - cron: "15 23 * * 4"   # nyári időszámítás (CEST, UTC+2): csütörtök 23:15 UTC = péntek 1:15
+    - cron: "15 0 * * 5"    # téli időszámítás (CET, UTC+1): péntek 0:15 UTC = péntek 1:15
   workflow_dispatch:        # kézi teszteléshez
 
 jobs:
